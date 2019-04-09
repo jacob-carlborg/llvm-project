@@ -1,0 +1,95 @@
+install_common_dependencies: &install_common_dependencies
+  name: Install common dependencies
+  command: |
+    if [ "$CI_OS" = "linux" ]; then
+      apt update
+      apt install curl git lbzip2 xz-utils -y
+    fi
+
+    curl -L -o github-release.tar.bz2 https://github.com/aktau/github-release/releases/download/v0.7.2/$CI_OS-amd64-github-release.tar.bz2
+    tar -C /usr/local/bin -xf github-release.tar.bz2 --strip 3
+    rm github-release.tar.bz2
+
+common_build: &common_build
+  steps:
+    - run: *install_common_dependencies
+    - run:
+        name: Install build dependencies
+        command: |
+          if [ "$CI_OS" = "linux" ]; then
+            apt install gcc g++ cmake python -y
+          else
+            brew install cmake
+          fi
+
+    - checkout
+    - run:
+        name: Build LLVM
+        command: ./.circleci/build_llvm.sh
+    - run:
+        name: Deploy to GitHub release
+        command: |
+          source "$CIRCLE_WORKING_DIRECTORY/.circleci/util.sh"
+          github-release upload \
+            -r llvm-project \
+            -u jacob-carlborg \
+            --name "$(archive_name)" \
+            --tag "dstep-$(llvm_version)" \
+            --file "$CIRCLE_WORKING_DIRECTORY/$(archive_name)"
+
+version: 2
+jobs:
+  create_release:
+    working_directory: /root/project
+    docker:
+      - image: ubuntu:16.04
+    environment:
+      - CI_OS: linux
+    steps:
+      - run: *install_common_dependencies
+      - checkout
+      - run:
+          name: Create release
+          command: |
+            source "$CIRCLE_WORKING_DIRECTORY/.circleci/util.sh"
+            github-release release \
+              --draft \
+              -r llvm-project \
+              -u jacob-carlborg \
+              --name "LLVM $version" \
+              --tag "dstep-$(llvm_version)" \
+              --description "LLVM $version"
+
+  build:linux:
+    <<: *common_build
+    working_directory: /root/project
+    docker:
+      - image: ubuntu:16.04
+    environment:
+      - CI_OS: linux
+  build:macos:
+    <<: *common_build
+    working_directory: /Users/distiller/project
+    macos:
+      xcode: "10.2.0"
+    environment:
+      - CI_OS: darwin
+
+common_workflow: &common_workflow
+  requires:
+    - create_release
+  # These are required to also trigger the job after pushing a tag.
+  filters:
+    tags:
+      only: /.*/
+
+workflows:
+  version: 2
+  build:
+    jobs:
+      - create_release:
+          filters:
+            tags:
+              only: /.*/
+      - build:linux: *common_workflow
+      - build:macos: *common_workflow
